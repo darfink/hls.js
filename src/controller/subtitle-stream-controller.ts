@@ -129,11 +129,24 @@ export class SubtitleStreamController
   ) {
     const { frag, part, success } = data;
     if (!success) {
+      if (this.state !== State.STOPPED) {
+        this.state = State.IDLE;
+      }
+      if (this.media) {
+        this.tickImmediate();
+      }
       return;
     }
 
     const buffered = this.tracksBuffered[this.currentTrackId];
     if (!buffered) {
+      // Track selection may have changed while this request was in flight. It
+      // must still complete the load operation even though its range no longer
+      // belongs in the selected track's synthetic buffer.
+      this.fragBufferedComplete(frag, part);
+      if (this.media) {
+        this.tickImmediate();
+      }
       return;
     }
 
@@ -150,12 +163,13 @@ export class SubtitleStreamController
 
     const end = start + (part || frag).duration;
     if (timeRange) {
-      timeRange.end = end;
+      timeRange.end = Math.max(timeRange.end, end);
     } else {
       timeRange = { start, end };
       buffered.push(timeRange);
     }
-    if (!part || end >= frag.end) {
+    const fragmentComplete = !part || end >= frag.end;
+    if (fragmentComplete) {
       const entity = this.fragmentTracker.fragBuffered(frag as MediaFragment);
       if (part && entity) {
         entity.range.subs = {
@@ -166,10 +180,14 @@ export class SubtitleStreamController
       if (isMediaFragment(frag) && !this.fragContextChanged(frag)) {
         this.fragPrevious = frag;
       }
-      this.fragBufferedComplete(frag, part);
-      if (this.media) {
-        this.tickImmediate();
-      }
+    }
+    // Every processed part completes one load operation, even when later parts
+    // of the same fragment are already advertised. Fragment tracking waits for
+    // the tail, but the scheduler must return to IDLE now to request the next
+    // part without waiting for its 500ms interval.
+    this.fragBufferedComplete(frag, part);
+    if (this.media) {
+      this.tickImmediate();
     }
   }
 

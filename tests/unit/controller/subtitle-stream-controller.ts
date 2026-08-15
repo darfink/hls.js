@@ -8,7 +8,7 @@ import Decrypter from '../../../src/crypt/decrypter';
 import { ErrorDetails } from '../../../src/errors';
 import { Events } from '../../../src/events';
 import Hls from '../../../src/hls';
-import { Fragment } from '../../../src/loader/fragment';
+import { Fragment, Part } from '../../../src/loader/fragment';
 import KeyLoader from '../../../src/loader/key-loader';
 import { PlaylistLevelType } from '../../../src/types/loader';
 import { AttrList } from '../../../src/utils/attr-list';
@@ -307,6 +307,124 @@ describe('SubtitleStreamController', function () {
       // Note: `fatal` is intentionally not asserted — the error-controller may
       // mutate the event payload to escalate to fatal after our trigger.
       expect(triggerSpy).to.not.have.been.calledWith(Events.FRAG_DECRYPTED);
+    });
+  });
+
+  describe('empty (silent) subtitle parts', function () {
+    // A live subtitle rendition on a part grid publishes a part every
+    // PART-TARGET regardless of whether anyone spoke. A part covering silence
+    // carries no cues, and a WebVTT body with no cues is legitimately zero
+    // bytes once the header lives in EXT-X-MAP. These assert that such a part
+    // still advances the controller rather than parking it.
+    it('marks a zero-byte subtitle part as loaded', function () {
+      const frag = new Fragment(PlaylistLevelType.SUBTITLE, '');
+      frag.sn = 1;
+      const part = new Part(
+        new AttrList({ DURATION: '0.5', URI: 'part/1.vtt' }),
+        frag as any,
+        '',
+        0,
+      );
+      // What a 200 OK with an empty body leaves behind: no bytes, but a
+      // request that demonstrably finished.
+      part.stats.loaded = 0;
+      part.stats.total = 0;
+      part.stats.loading.start = 1;
+      part.stats.loading.first = 2;
+      part.stats.loading.end = 3;
+
+      expect(
+        part.loaded,
+        'a silent part that was fetched successfully must count as loaded, ' +
+          'otherwise getNextPart keeps selecting it forever',
+      ).to.equal(true);
+
+      part.stats.loading.end = 0;
+      expect(part.loaded, 'a request still in flight is not loaded').to.equal(
+        false,
+      );
+    });
+
+    it('returns to IDLE after an empty subtitle payload', function () {
+      const frag = new Fragment(PlaylistLevelType.SUBTITLE, '');
+      frag.sn = 1;
+      frag.level = 0;
+      subtitleStreamController.currentTrackId = 0;
+      subtitleStreamController.tracksBuffered[0] = [];
+      // Where _doFragLoad leaves the controller for the whole of a subtitle
+      // request: subtitles never transition to PARSING, so this is the state a
+      // zero-byte response actually returns into.
+      subtitleStreamController.state = State.FRAG_LOADING;
+
+      // A genuinely unprocessable empty payload still releases the scheduler.
+      hls.trigger(Events.SUBTITLE_FRAG_PROCESSED, {
+        success: false,
+        frag,
+        part: null,
+        error: new Error('Empty subtitle payload'),
+      });
+
+      expect(
+        subtitleStreamController.state,
+        'an empty payload must not leave the controller parked outside IDLE',
+      ).to.equal(State.IDLE);
+    });
+
+    it('advances the buffered range across an empty part', function () {
+      const frag = new Fragment(PlaylistLevelType.SUBTITLE, '');
+      frag.sn = 1;
+      frag.level = 0;
+      frag.start = 10;
+      frag.duration = 2;
+      subtitleStreamController.currentTrackId = 0;
+      subtitleStreamController.tracksBuffered[0] = [];
+      subtitleStreamController.state = State.FRAG_LOADING;
+
+      const silent = { index: 0, fragment: frag, start: 10, duration: 0.5 };
+      const spoken = { index: 1, fragment: frag, start: 10.5, duration: 0.5 };
+
+      // A silent part, then one carrying cues: contiguous media either way.
+      hls.trigger(Events.SUBTITLE_FRAG_PROCESSED, {
+        success: true,
+        frag,
+        part: silent,
+      });
+      expect(
+        subtitleStreamController.state,
+        'an intermediate part completes its own load operation',
+      ).to.equal(State.IDLE);
+      subtitleStreamController.state = State.FRAG_LOADING;
+      hls.trigger(Events.SUBTITLE_FRAG_PROCESSED, {
+        success: true,
+        frag,
+        part: spoken,
+      });
+
+      const buffered = subtitleStreamController.tracksBuffered[0];
+      expect(
+        buffered,
+        'a silent part covers media time, so it must not split the buffered ' +
+          'range — a hole there makes selection stall until the next tick',
+      ).to.have.lengthOf(1);
+      expect(buffered[0].start).to.equal(10);
+      expect(buffered[0].end).to.equal(11);
+    });
+
+    it('completes a successful load after its selected track was removed', function () {
+      const frag = new Fragment(PlaylistLevelType.SUBTITLE, '');
+      frag.sn = 1;
+      frag.level = 0;
+      subtitleStreamController.currentTrackId = 0;
+      subtitleStreamController.tracksBuffered = [];
+      subtitleStreamController.state = State.FRAG_LOADING;
+
+      hls.trigger(Events.SUBTITLE_FRAG_PROCESSED, {
+        success: true,
+        frag,
+        part: null,
+      });
+
+      expect(subtitleStreamController.state).to.equal(State.IDLE);
     });
   });
 });

@@ -405,16 +405,22 @@ export class TimelineController implements ComponentAPI {
       frag.level < this.tracks.length &&
       frag.type === PlaylistLevelType.SUBTITLE
     ) {
-      // If fragment is subtitle type, parse as WebVTT.
-      if (payload.byteLength) {
+      const trackPlaylistMedia = this.tracks[frag.level] as
+        | MediaPlaylist
+        | undefined;
+      const mappedEmptyWebVtt =
+        payload.byteLength === 0 &&
+        trackPlaylistMedia?.textCodec !== IMSC1_CODEC &&
+        !!frag.initSegment?.data?.byteLength;
+      // A mapped WebVTT part may have no media bytes when no cue intersects its
+      // interval. `_parseVTTs` prepends the init section, so parsing that part
+      // normally succeeds with zero cues and follows the ordinary success path.
+      if (payload.byteLength || mappedEmptyWebVtt) {
         const decryptData = frag.decryptdata;
         // fragment after decryption has a stats object
         const decrypted = 'stats' in data;
         // If the subtitles are not encrypted, parse VTTs now. Otherwise, we need to wait.
         if (decryptData == null || !decryptData.encrypted || decrypted) {
-          const trackPlaylistMedia = this.tracks[frag.level] as
-            | MediaPlaylist
-            | undefined;
           const vttCCs = this.vttCCs;
           if (!vttCCs[frag.cc]) {
             vttCCs[frag.cc] = {
