@@ -240,6 +240,9 @@ export class FragmentTracker implements ComponentAPI {
     if (!fragmentEntity || (fragmentEntity.buffered && frag.gap)) {
       return;
     }
+    fragmentEntity.bufferedPartEnd = part
+      ? Math.max(fragmentEntity.bufferedPartEnd ?? -Infinity, part.end)
+      : undefined;
     const isFragHint = !frag.relurl;
     Object.keys(timeRanges).forEach((elementaryStream: SourceBufferName) => {
       const streamInfo = frag.elementaryStreams[elementaryStream];
@@ -349,6 +352,10 @@ export class FragmentTracker implements ComponentAPI {
     partial: boolean,
     timeRange: TimeRanges,
   ): FragmentBufferedRange {
+    // Buffer padding can cover an entire LL-HLS part. Until the final part
+    // arrives, do not treat that padding as proof the parent is complete.
+    // A late callback for an earlier part must preserve already complete media.
+    const pendingTail = part !== null && part.end < fragment.end;
     const buffered: FragmentBufferedRange = {
       time: [],
       partial,
@@ -360,7 +367,11 @@ export class FragmentTracker implements ComponentAPI {
     for (let i = 0; i < timeRange.length; i++) {
       const startTime = timeRange.start(i) - this.bufferPadding;
       const endTime = timeRange.end(i) + this.bufferPadding;
-      if (maxStartPTS >= startTime && minEndPTS <= endTime) {
+      if (
+        maxStartPTS >= startTime &&
+        minEndPTS <= endTime &&
+        (!pendingTail || endPTS <= timeRange.end(i))
+      ) {
         // Fragment is entirely contained in buffer
         // No need to check the other timeRange times since it's completely playable
         buffered.time.push({
@@ -434,7 +445,11 @@ export class FragmentTracker implements ComponentAPI {
     if (fragmentEntity) {
       if (!fragmentEntity.buffered) {
         return FragmentState.APPENDING;
-      } else if (isPartial(fragmentEntity)) {
+      } else if (
+        isPartial(fragmentEntity) ||
+        (fragmentEntity.bufferedPartEnd !== undefined &&
+          fragmentEntity.bufferedPartEnd < fragment.end)
+      ) {
         return FragmentState.PARTIAL;
       } else {
         return FragmentState.OK;

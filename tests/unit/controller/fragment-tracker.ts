@@ -6,10 +6,12 @@ import {
 } from '../../../src/controller/fragment-tracker';
 import { Events } from '../../../src/events';
 import Hls from '../../../src/hls';
+import { Part } from '../../../src/loader/fragment';
 import { ElementaryStreamTypes, Fragment } from '../../../src/loader/fragment';
 import { LoadStats } from '../../../src/loader/load-stats';
 import { PlaylistLevelType } from '../../../src/types/loader';
 import { ChunkMetadata } from '../../../src/types/transmuxer';
+import { AttrList } from '../../../src/utils/attr-list';
 import type {
   BufferAppendedData,
   FragBufferedData,
@@ -19,6 +21,91 @@ import type {
 use(sinonChai);
 
 describe('FragmentTracker', function () {
+  describe('final parent with pending parts', function () {
+    [PlaylistLevelType.MAIN, PlaylistLevelType.AUDIO].forEach((type) => {
+      it(`keeps ${type} partial until the last part is buffered`, function () {
+        const hls = new Hls({});
+        const tracker = new FragmentTracker(hls);
+        const stream =
+          type === PlaylistLevelType.MAIN
+            ? ElementaryStreamTypes.VIDEO
+            : ElementaryStreamTypes.AUDIO;
+        const frag = createMockFragment(
+          { startPTS: 22, endPTS: 24, sn: 12, level: 0, type },
+          [stream],
+        );
+        const first = new Part(
+          new AttrList('DURATION=1.8,URI="first.m4s"'),
+          frag as any,
+          '',
+          0,
+        );
+        const last = new Part(
+          new AttrList('DURATION=0.2,URI="last.m4s"'),
+          frag as any,
+          '',
+          1,
+          first,
+        );
+        // The playlist can grow a parent that was previously fully buffered.
+        frag.duration = 1.8;
+        triggerFragLoaded(hls, frag);
+        hls.trigger(
+          Events.BUFFER_APPENDED,
+          createBufferAppendedData([{ startPTS: 22, endPTS: 23.8 }]),
+        );
+        hls.trigger(Events.FRAG_BUFFERED, {
+          ...createFragBufferedData(frag),
+          part: first,
+        });
+        expect(tracker.getState(frag)).to.equal(FragmentState.OK);
+        frag.duration = 2;
+        expect(tracker.getState(frag)).to.equal(FragmentState.PARTIAL);
+        // The 200 ms tracker padding must not hide a whole missing final part.
+        triggerFragLoaded(hls, frag);
+        hls.trigger(
+          Events.BUFFER_APPENDED,
+          createBufferAppendedData([{ startPTS: 22, endPTS: 23.8 }]),
+        );
+        hls.trigger(Events.FRAG_BUFFERED, {
+          ...createFragBufferedData(frag),
+          part: first,
+        });
+        expect(tracker.getState(frag)).to.equal(FragmentState.PARTIAL);
+        // A later buffered segment does not fill the missing tail of this one.
+        hls.trigger(
+          Events.BUFFER_APPENDED,
+          createBufferAppendedData([
+            { startPTS: 22, endPTS: 23.8 },
+            { startPTS: 26, endPTS: 28 },
+          ]),
+        );
+        hls.trigger(Events.FRAG_BUFFERED, {
+          ...createFragBufferedData(frag),
+          part: first,
+        });
+        expect(tracker.getState(frag)).to.equal(FragmentState.PARTIAL);
+
+        hls.trigger(
+          Events.BUFFER_APPENDED,
+          createBufferAppendedData([{ startPTS: 22, endPTS: 24 }]),
+        );
+        hls.trigger(Events.FRAG_BUFFERED, {
+          ...createFragBufferedData(frag),
+          part: last,
+        });
+        expect(tracker.getState(frag)).to.equal(FragmentState.OK);
+        hls.trigger(Events.FRAG_BUFFERED, {
+          ...createFragBufferedData(frag),
+          part: first,
+        });
+        expect(tracker.getState(frag)).to.equal(FragmentState.OK);
+        tracker.destroy();
+        hls.destroy();
+      });
+    });
+  });
+
   describe('getPartialFragment', function () {
     const hls = new Hls({});
     const fragmentTracker = new FragmentTracker(hls);

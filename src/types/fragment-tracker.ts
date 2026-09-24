@@ -9,6 +9,8 @@ export interface FragmentEntity {
   appendedPTS: number | null;
   loaded: FragLoadedData | null;
   buffered: boolean;
+  // Last endpoint delivered by parts, independent of later playlist growth.
+  bufferedPartEnd?: number;
   range: { [key in SourceBufferName | 'subs']: FragmentBufferedRange };
 }
 
