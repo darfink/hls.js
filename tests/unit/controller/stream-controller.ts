@@ -477,6 +477,20 @@ describe('StreamController', function () {
       assertNotLoadingState();
     });
 
+    it('loads explicit pending parts despite a complete parent state', function () {
+      fragStateStub(FragmentState.OK);
+      sinon.stub(streamController as any, 'hasUnloadedParts').returns(true);
+      streamController['loadFragment'](frag, level, 0);
+      assertLoadingState(frag);
+    });
+
+    it('does not reload pending parts while the parent is appending', function () {
+      fragStateStub(FragmentState.APPENDING);
+      sinon.stub(streamController as any, 'hasUnloadedParts').returns(true);
+      streamController['loadFragment'](frag, level, 0);
+      assertNotLoadingState();
+    });
+
     it('should not load a fragment while it is appending', function () {
       fragStateStub(FragmentState.APPENDING);
       streamController['loadFragment'](frag, level, 0);

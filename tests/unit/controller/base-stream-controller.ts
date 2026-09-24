@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import sinonChai from 'sinon-chai';
 import { hlsDefaultConfig } from '../../../src/config';
 import { State } from '../../../src/controller/base-stream-controller';
+import { FragmentState } from '../../../src/controller/fragment-tracker';
 import BaseStreamControllerImpl from '../../../src/controller/stream-controller';
 import { ErrorDetails, ErrorTypes } from '../../../src/errors';
 import Hls from '../../../src/hls';
@@ -98,6 +99,169 @@ describe('BaseStreamController', function () {
       buffered: new TimeRangesMock(),
     } as unknown as HTMLMediaElement;
     baseStreamController.media = media;
+  });
+
+  describe('pending parts after ENDLIST', function () {
+    [PlaylistLevelType.MAIN, PlaylistLevelType.AUDIO].forEach((type) => {
+      it(`retains the final ${type} parent until its remaining parts load`, function () {
+        const controller = baseStreamController as any;
+        const parent = new Fragment(
+          type,
+          'https://example.com/',
+        ) as MediaFragment;
+        parent.sn = 12;
+        parent.start = 22;
+        parent.duration = 2;
+        const details = new LevelDetails('');
+        details.startSN = details.endSN = 12;
+        details.fragments = [parent];
+        details.live = true;
+        const hint = new Fragment(
+          type,
+          'https://example.com/',
+        ) as MediaFragment;
+        hint.sn = 13;
+        details.fragmentHint = hint;
+        const part = {
+          fragment: parent,
+          index: 9,
+          start: 23.8,
+          duration: 0.2,
+          end: 24,
+          loaded: false,
+          gap: false,
+        };
+        details.partList = [part as unknown as Part];
+        controller.loadingParts = true;
+        controller.fragPrevious = parent;
+        fragmentTracker.state = FragmentState.PARTIAL;
+        expect(controller.getFragmentAtPosition(23.8, 24, details)).to.equal(
+          parent,
+        );
+        details.live = false;
+        details.fragmentHint = undefined;
+        expect(controller.getFragmentAtPosition(23.8, 24, details)).to.equal(
+          parent,
+        );
+        // A cached complete-parent state must not suppress explicit unloaded parts.
+        sinon.stub(controller, 'getLevelDetails').returns(details);
+        fragmentTracker.state = FragmentState.OK;
+        controller.nextLoadPosition = 24;
+        expect(controller.hasUnloadedParts(parent)).to.equal(true);
+        expect(controller.isLoopLoading(parent, 23.8)).to.equal(false);
+        part.loaded = true;
+        expect(controller.getFragmentAtPosition(24, 24, details)).to.equal(
+          null,
+        );
+        part.loaded = false;
+        part.gap = true;
+        expect(controller.hasUnloadedParts(parent)).to.equal(false);
+        expect(controller.getFragmentAtPosition(23.8, 24, details)).to.equal(
+          null,
+        );
+        part.gap = false;
+        controller.loadingParts = false;
+        expect(controller.getFragmentAtPosition(23.8, 24, details)).to.equal(
+          null,
+        );
+      });
+    });
+  });
+
+  it('preserves loaded parts when ENDLIST updates the tracked final parent', function () {
+    const parent = new Fragment(PlaylistLevelType.MAIN, '') as MediaFragment;
+    parent.sn = 12;
+    parent.start = 22;
+    parent.duration = 2;
+    parent.endList = true;
+    const details = new LevelDetails('');
+    details.updated = true;
+    details.live = false;
+    details.fragments = [parent];
+    fragmentTracker.isEndListAppended = () => false;
+    fragmentTracker.getPartialFragment = () => parent;
+    fragmentTracker.removeFragment = sinon.spy();
+    fragmentTracker.fragBuffered = sinon.spy();
+    fragmentTracker.detectPartialFragments = sinon.spy();
+    (baseStreamController as any).checkLiveUpdate(details);
+    expect(fragmentTracker.removeFragment).not.to.have.been.called;
+    expect(fragmentTracker.fragBuffered).to.have.been.calledWith(parent, true);
+  });
+
+  describe('live part boundary selection', function () {
+    [PlaylistLevelType.MAIN, PlaylistLevelType.AUDIO].forEach((type) => {
+      it(`does not skip the last ${type} part using fragment lookup tolerance`, function () {
+        const controller = baseStreamController as any;
+        const previous = new Fragment(type, '') as MediaFragment;
+        previous.sn = 2;
+        previous.start = 2;
+        previous.duration = 2;
+        const next = new Fragment(type, '') as MediaFragment;
+        next.sn = 3;
+        next.start = 4;
+        next.duration = 2;
+        const details = new LevelDetails('');
+        details.live = true;
+        details.startSN = 2;
+        details.endSN = 3;
+        details.fragments = [previous, next];
+        details.fragmentHint = next;
+        const tail = {
+          fragment: previous,
+          index: 9,
+          start: 3.8,
+          end: 4,
+          duration: 0.2,
+          loaded: false,
+          gap: false,
+        };
+        details.partList = [
+          tail,
+          {
+            ...tail,
+            fragment: next,
+            index: 0,
+            start: 4,
+            end: 4.2,
+            independent: true,
+          },
+        ] as unknown as Part[];
+        controller.loadingParts = true;
+        controller.startFragRequested = true;
+        controller.fragPrevious = previous;
+        controller.lastCurrentTime = 2;
+        fragmentTracker.state = FragmentState.OK;
+        sinon.stub(controller, 'getLevelDetails').returns(details);
+        controller.nextLoadPosition = 4;
+        expect(controller.hasUnloadedParts(previous, 3.8)).to.equal(true);
+        expect(controller.isLoopLoading(previous, 3.8)).to.equal(false);
+        expect(controller.hasUnloadedParts(previous, 3.9999995)).to.equal(
+          false,
+        );
+        expect(controller.isLoopLoading(previous, 3.9999995)).to.equal(true);
+        tail.end = 4.000000003;
+        expect(controller.hasUnloadedParts(previous, 3.999999)).to.equal(false);
+        tail.end = 4;
+        fragmentTracker.state = FragmentState.PARTIAL;
+        expect(controller.getFragmentAtPosition(3.8, 4.2, details)).to.equal(
+          previous,
+        );
+        // A stale unloaded flag behind the quantized buffer edge must not
+        // pull selection back into a parent already appended in full.
+        expect(
+          controller.getFragmentAtPosition(3.9999995, 4.2, details),
+        ).to.equal(next);
+        tail.gap = true;
+        expect(controller.getFragmentAtPosition(3.8, 4.2, details)).to.equal(
+          next,
+        );
+        tail.gap = false;
+        tail.loaded = true;
+        expect(controller.getFragmentAtPosition(4, 4.2, details)).to.equal(
+          next,
+        );
+      });
+    });
   });
 
   function levelDetailsWithEndSequenceVodOrLive(

@@ -394,7 +394,9 @@ export default class StreamController
     const fragState = this.fragmentTracker.getState(frag);
     if (
       fragState === FragmentState.NOT_LOADED ||
-      fragState === FragmentState.PARTIAL
+      fragState === FragmentState.PARTIAL ||
+      (fragState === FragmentState.OK &&
+        this.hasUnloadedParts(frag, targetBufferTime))
     ) {
       if (this.bitrateTest) {
         this.log(

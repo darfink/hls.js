@@ -539,6 +539,8 @@ export class BaseStreamController extends TaskLoop implements NetworkComponentAP
     // (undocumented)
     protected _handleTransmuxerFlush(chunkMeta: ChunkMetadata): void;
     // (undocumented)
+    protected hasUnloadedParts(frag: Fragment, bufferEnd?: number): boolean;
+    // (undocumented)
     protected hls: Hls;
     // (undocumented)
     protected get iframesOnly(): boolean | undefined;

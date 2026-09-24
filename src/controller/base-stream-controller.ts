@@ -668,7 +668,11 @@ export default class BaseStreamController
           lastFragment.end,
         );
         if (fragmentAtEnd) {
-          fragmentTracker.removeFragment(fragmentAtEnd);
+          // Preserve loaded part markers when ENDLIST updates the same parent.
+          // Removing it would replay its earlier parts before the pending tail.
+          if (!mediaFragmentsAreEqual(fragmentAtEnd, lastFragment)) {
+            fragmentTracker.removeFragment(fragmentAtEnd);
+          }
           fragmentTracker.fragBuffered(lastFragment, true);
         }
       }
@@ -1616,7 +1620,27 @@ export default class BaseStreamController
     return programFrag;
   }
 
+  protected hasUnloadedParts(frag: Fragment, bufferEnd = -Infinity): boolean {
+    return !!(
+      isMediaFragment(frag) &&
+      this.loadingParts &&
+      this.getLevelDetails()?.partList?.some(
+        (part) =>
+          mediaFragmentsAreEqual(part.fragment, frag) &&
+          !part.loaded &&
+          !part.gap &&
+          // Older parts can lose their loaded marker when tracking is pruned.
+          // Do not reload them behind the microsecond-quantized buffer edge.
+          part.end > bufferEnd + 0.0000015,
+      )
+    );
+  }
+
   protected isLoopLoading(frag: Fragment, targetBufferTime: number): boolean {
+    // Playlist parts are more precise than the padded parent buffer state.
+    if (this.hasUnloadedParts(frag, targetBufferTime)) {
+      return false;
+    }
     if (this.nextLoadPosition <= targetBufferTime) {
       return false;
     }
@@ -1883,19 +1907,32 @@ export default class BaseStreamController
     const { maxFragLookUpTolerance } = config;
     const partList = levelDetails.partList;
 
-    const loadingParts = !!(
-      this.loadingParts &&
-      partList?.length &&
-      fragmentHint
-    );
+    const loadingParts = !!(this.loadingParts && partList?.length);
     if (
       loadingParts &&
+      fragmentHint &&
       !this.bitrateTest &&
       partList[partList.length - 1].fragment.sn === fragmentHint.sn
     ) {
       // Include incomplete fragment with parts at end
       fragments = fragments.concat(fragmentHint);
       endSN = fragmentHint.sn;
+    }
+
+    // Segment lookup can skip fragPrevious and tolerate an entire part's
+    // duration. Preserve a pending part at the buffer edge before advancing
+    // into the next GOP. Allow for microsecond buffer quantization and playlist rounding.
+    const pendingPart = loadingParts
+      ? partList.find(
+          (part) =>
+            !part.loaded &&
+            !part.gap &&
+            part.start <= bufferEnd + 0.0000015 &&
+            part.end > bufferEnd + 0.0000015,
+        )
+      : undefined;
+    if (pendingPart) {
+      return pendingPart.fragment;
     }
 
     // Clear fragPrevious if removed from buffer / tracker so that is picked again
@@ -1910,6 +1947,7 @@ export default class BaseStreamController
     if (bufferEnd < end) {
       const backwardSeek = bufferEnd < this.lastCurrentTime;
       const lookupTolerance =
+        loadingParts ||
         backwardSeek ||
         bufferEnd > end - maxFragLookUpTolerance ||
         this.media?.paused ||
@@ -1940,11 +1978,19 @@ export default class BaseStreamController
       ) {
         fragPrevious = frag;
       }
+      // ENDLIST can arrive before the last advertised parts have loaded.
+      // Keep their parent eligible rather than advancing past the final fragment.
       if (
         mediaFragmentsAreEqual(frag, fragPrevious) &&
         (!loadingParts ||
           partList[0].fragment.sn > frag.sn ||
-          !levelDetails.live)
+          (!levelDetails.live &&
+            !partList.some(
+              (part) =>
+                mediaFragmentsAreEqual(part.fragment, frag) &&
+                !part.loaded &&
+                !part.gap,
+            )))
       ) {
         const nextFrag = fragments[curSNIdx + 1];
         if (

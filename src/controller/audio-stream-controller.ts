@@ -1066,7 +1066,9 @@ class AudioStreamController
     if (
       this.switchingTrack ||
       fragState === FragmentState.NOT_LOADED ||
-      fragState === FragmentState.PARTIAL
+      fragState === FragmentState.PARTIAL ||
+      (fragState === FragmentState.OK &&
+        this.hasUnloadedParts(frag, targetBufferTime))
     ) {
       if (track.details?.live && !this.initPTS[frag.cc]) {
         this.log(
