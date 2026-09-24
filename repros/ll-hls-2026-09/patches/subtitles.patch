@@ -1,0 +1,177 @@
+From e8e2b78464dea4318c3bc521bfff47a31325831a Mon Sep 17 00:00:00 2001
+From: Elliott Linder <elliott@linder.dev>
+Date: Thu, 24 Sep 2026 09:45:07 +0200
+Subject: [PATCH] fix(subtitles): ignore late delta responses for inactive
+ tracks
+
+---
+ src/controller/subtitle-stream-controller.ts  |  9 +-
+ src/controller/subtitle-track-controller.ts   |  6 ++
+ .../controller/subtitle-track-controller.ts   | 98 +++++++++++++++++++
+ 3 files changed, 109 insertions(+), 4 deletions(-)
+
+diff --git a/src/controller/subtitle-stream-controller.ts b/src/controller/subtitle-stream-controller.ts
+index 0910a0837..af4ade117 100644
+--- a/src/controller/subtitle-stream-controller.ts
++++ b/src/controller/subtitle-stream-controller.ts
+@@ -280,6 +280,11 @@ export class SubtitleStreamController
+   ) {
+     const { currentTrackId, levels } = this;
+     const { details: newDetails, id: trackId } = data;
++    // A late response for an inactive track still contains unmerged delta
++    // placeholders. Ignore it before alignment or replacing playback details.
++    if (trackId !== currentTrackId) {
++      return;
++    }
+     if (!levels) {
+       this.warn(`Subtitle tracks were reset while loading level ${trackId}`);
+       return;
+@@ -331,10 +336,6 @@ export class SubtitleStreamController
+       this.setStartPosition(mainDetails, sliding);
+     }
+ 
+-    if (trackId !== currentTrackId) {
+-      return;
+-    }
+-
+     this.hls.trigger(Events.SUBTITLE_TRACK_UPDATED, {
+       details: newDetails,
+       id: trackId,
+diff --git a/src/controller/subtitle-track-controller.ts b/src/controller/subtitle-track-controller.ts
+index 91b5e18a4..147c9c793 100644
+--- a/src/controller/subtitle-track-controller.ts
++++ b/src/controller/subtitle-track-controller.ts
+@@ -210,6 +210,12 @@ class SubtitleTrackController extends BasePlaylistController {
+     data: TrackLoadedData,
+   ): void {
+     const { id, groupId, details } = data;
++    // Only the selected track has its delta placeholders merged below.
++    // Keep complete inactive-track responses cacheable, but never cache an
++    // unmerged delta that could break a later switch back to this track.
++    if (id !== this.trackId && details.skippedSegments) {
++      return;
++    }
+     const trackInActiveGroup = this.tracksInGroup[id];
+ 
+     if (
+diff --git a/tests/unit/controller/subtitle-track-controller.ts b/tests/unit/controller/subtitle-track-controller.ts
+index b4df9114d..cf0d3c460 100644
+--- a/tests/unit/controller/subtitle-track-controller.ts
++++ b/tests/unit/controller/subtitle-track-controller.ts
+@@ -1,11 +1,14 @@
+ import { expect, use } from 'chai';
+ import sinon from 'sinon';
+ import sinonChai from 'sinon-chai';
++import { SubtitleStreamController } from '../../../src/controller/subtitle-stream-controller';
+ import SubtitleTrackController from '../../../src/controller/subtitle-track-controller';
+ import { Events } from '../../../src/events';
+ import Hls from '../../../src/hls';
+ import { LevelDetails } from '../../../src/loader/level-details';
+ import { LoadStats } from '../../../src/loader/load-stats';
++import M3U8Parser from '../../../src/loader/m3u8-parser';
++import { PlaylistLevelType } from '../../../src/types/loader';
+ import { AttrList } from '../../../src/utils/attr-list';
+ import { IMSC1_CODEC } from '../../../src/utils/imsc1-ttml-parser';
+ import type {
+@@ -738,3 +741,98 @@ describe('SubtitleTrackController', function () {
+     });
+   });
+ });
++
++describe('Late subtitle delta responses', function () {
++  const url = 'https://example.com/subtitles.m3u8';
++  const parsePlaylist = (skip = 0) =>
++    M3U8Parser.parseLevelPlaylist(
++      [
++        '#EXTM3U',
++        '#EXT-X-TARGETDURATION:2',
++        '#EXT-X-MEDIA-SEQUENCE:100',
++        ...(skip ? [`#EXT-X-SKIP:SKIPPED-SEGMENTS=${skip}`] : []),
++        ...Array.from(
++          { length: 4 - skip },
++          (_, i) => `#EXTINF:2,\n${100 + skip + i}.vtt`,
++        ),
++      ].join('\n'),
++      url,
++      0,
++      PlaylistLevelType.SUBTITLE,
++      0,
++      null,
++    );
++
++  let hls: Hls;
++  let previous: LevelDetails;
++  let track;
++  let trackController;
++  let streamController;
++  let errors;
++  let updates;
++
++  beforeEach(function () {
++    hls = new Hls({ autoStartLoad: false, enableWorker: false });
++    previous = parsePlaylist();
++    track = { id: 0, groupId: 'subs', name: 'English', url, details: previous };
++    trackController = (hls as any).subtitleTrackController;
++    streamController = (hls as any).networkControllers.filter(
++      (controller) => controller instanceof SubtitleStreamController,
++    )[0];
++    trackController.tracksInGroup = [track];
++    streamController.levels = [{ id: 0, details: previous }];
++    streamController.mainDetails = previous;
++    errors = [];
++    updates = [];
++    hls.on(Events.ERROR, (_, data) => errors.push(data));
++    hls.on(Events.SUBTITLE_TRACK_UPDATED, (_, data) => updates.push(data));
++  });
++
++  afterEach(function () {
++    hls.destroy();
++  });
++
++  function select(id: number) {
++    trackController.trackId = id;
++    trackController.currentTrack = id === 0 ? track : null;
++    streamController.currentTrackId = id;
++  }
++
++  function respond(details: LevelDetails) {
++    hls.trigger(Events.SUBTITLE_TRACK_LOADED, {
++      id: 0,
++      groupId: 'subs',
++      details,
++      track,
++      stats: new LoadStats(),
++      networkDetails: null,
++      deliveryDirectives: null,
++    });
++  }
++
++  [-1, 1].forEach((id) => {
++    it(`ignores an unmerged delta after selecting subtitle track ${id}`, function () {
++      select(id);
++      const delta = parsePlaylist(2);
++      expect(delta.fragments[0]).to.equal(null);
++      respond(delta);
++      expect(errors).to.deep.equal([]);
++      expect(updates).to.deep.equal([]);
++      expect(track.details).to.equal(previous);
++      expect(streamController.levels[0].details).to.equal(previous);
++    });
++  });
++
++  it('merges a fresh delta after reselecting captions', function () {
++    select(-1);
++    respond(parsePlaylist(2));
++    select(0);
++    const resumed = parsePlaylist(2);
++    respond(resumed);
++    expect(errors).to.deep.equal([]);
++    expect(updates).to.have.lengthOf(1);
++    expect(resumed.fragments[0].sn).to.equal(100);
++    expect(resumed.fragments[0].start).to.equal(0);
++    expect(streamController.levels[0].details).to.equal(resumed);
++  });
++});
+-- 
+2.50.1 (Apple Git-155)
+

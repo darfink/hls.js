@@ -1,0 +1,31 @@
+{
+  "upstream_base": "c721313f028431b107e4a77edf40bb908f8d782c",
+  "captured_media": "Synthetic Rushls live_av_gap_browser_origin control fixture",
+  "snapshots_sha256": "f9c9f8019450a1e546a4c26d308f5bf98505b3705b98c599d0d9d6a451523e2e",
+  "builds": {
+    "upstream": {
+      "commit": "c721313f028431b107e4a77edf40bb908f8d782c",
+      "sha256": "61ca67051170b55bb979e62e61ca15a32b501e5ea6302cc0a4a4bfe29d063a95"
+    },
+    "tail": {
+      "commit": "811ed74068508c4eff7a145ec14a8c87d78b7044",
+      "sha256": "140ebc8fe4136e368523315a14dbec516aec452c570e017061400f464d5707bd"
+    },
+    "subtitles": {
+      "commit": "e8e2b78464dea4318c3bc521bfff47a31325831a",
+      "sha256": "8a0d67368f96638666a3a490f7ff5c62b5d8f19ed09ae1eb820b6c6630a4fdd2"
+    },
+    "tracker": {
+      "commit": "23cc7a8dff9d7f502638da608cc0c4793153f387",
+      "sha256": "cf6f218f023817fbe895e14f99c72d12c079290a70dec64f63fb7c4b6e71af92"
+    },
+    "loading": {
+      "commit": "fb71cf3514db320b237d5392f1fabf215115ba30",
+      "sha256": "896d1fbbae3475a2abddaaf2c2fbe26af9b7446cdb517ff2a02f1a1f069fea0a"
+    },
+    "combined": {
+      "commit": "08f96a9eaeeb41e225944c1109ac7f5bc1d08e48",
+      "sha256": "55a28d4b0c166ad4e21a8b2933e1032b7f4dff0a4bbe7b2855850b153ea1b6c2"
+    }
+  }
+}

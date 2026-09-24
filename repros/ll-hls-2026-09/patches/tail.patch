@@ -1,0 +1,172 @@
+From 811ed74068508c4eff7a145ec14a8c87d78b7044 Mon Sep 17 00:00:00 2001
+From: Elliott Linder <elliott@linder.dev>
+Date: Mon, 17 Aug 2026 22:45:42 +0200
+Subject: [PATCH] fix: preserve unloaded tail parts at fragment boundaries
+
+An unloaded part within maxFragLookUpTolerance (0.25s by default) of the
+next fragment keeps that fragment within tolerance, so findFragmentByPTS
+prefers it before the part loads. The caller then clamps targetBufferTime
+to the start of that fragment with Math.max(frag.start, targetBufferTime).
+
+getNextPart holds the earliest part that it still needs and overwrites
+that candidate on each iteration, so the break decides when the search
+stops. The break tests 'targetBufferTime < part.start'. After the clamp
+the target equals the start of part 0 of the next fragment, so the search
+does not stop there. It takes one more step and overwrites the correct
+candidate. hls.js never requests the unloaded part, and it gives no error
+and no gap event.
+
+Break on 'targetBufferTime <= part.start'. A part that starts at the
+target adds nothing before the target, so the search has gone far enough.
+The new comparison stops earlier than the old one, never later, and only
+when a candidate exists, because the break also tests nextPart > -1. A
+loaded part resets the candidate to -1, so selection advances as before.
+
+Only the last part of a segment is within tolerance of the next fragment.
+Two configurations put it there. A PART-TARGET of 250ms or less puts every
+segment's last part in range. A short remainder part is in range at any
+PART-TARGET: a 48 kHz AAC segment of 93 frames divides as
+23 + 23 + 23 + 23 + 1, which leaves 21.333ms.
+
+Commit 4aa7ccde9 clamped the tolerance with Math.min(tolerance,
+candidate.duration) so that the search cannot pass over small segments.
+That clamp compares against the fragment under test, so partial segments
+get no equivalent protection.
+---
+ src/controller/base-stream-controller.ts      |   7 +-
+ .../unit/controller/base-stream-controller.ts | 103 ++++++++++++++++++
+ 2 files changed, 109 insertions(+), 1 deletion(-)
+
+diff --git a/src/controller/base-stream-controller.ts b/src/controller/base-stream-controller.ts
+index a5dfa6aa9..f942c029b 100644
+--- a/src/controller/base-stream-controller.ts
++++ b/src/controller/base-stream-controller.ts
+@@ -1755,7 +1755,12 @@ export default class BaseStreamController
+     for (let i = 0, len = partList.length; i < len; i++) {
+       const part = partList[i];
+       independentAttrOmitted = independentAttrOmitted && !part.independent;
+-      if (nextPart > -1 && targetBufferTime < part.start) {
++      // When a fragment's final part is shorter than maxFragLookUpTolerance,
++      // fragment selection can prefer the next fragment while that part is
++      // still unloaded, clamping the target to the next fragment's start.
++      // Stop at a part starting at the target so the unloaded tail preceding
++      // it is not skipped.
++      if (nextPart > -1 && targetBufferTime <= part.start) {
+         break;
+       }
+       const loaded = part.loaded || part.gap;
+diff --git a/tests/unit/controller/base-stream-controller.ts b/tests/unit/controller/base-stream-controller.ts
+index db6c80fc6..06591a6ad 100644
+--- a/tests/unit/controller/base-stream-controller.ts
++++ b/tests/unit/controller/base-stream-controller.ts
+@@ -1494,4 +1494,107 @@ describe('BaseStreamController', function () {
+         .called;
+     });
+   });
++
++  describe('getNextPart', function () {
++    // A 93-frame AAC segment divides as 23 + 23 + 23 + 23 + 1, leaving a
++    // 21.333ms tail. Any tail shorter than maxFragLookUpTolerance (0.25s by
++    // default) lets fragment lookup prefer the next fragment before the tail
++    // loads, clamping the target to that fragment's part 0.
++    const AAC_FRAME = 1024 / 48000;
++    const REGULAR_PART = AAC_FRAME * 23;
++    const SEGMENT_DURATION = AAC_FRAME * 93;
++
++    function partGrid(): {
++      partList: Part[];
++      parentA: MediaFragment;
++      parentB: MediaFragment;
++    } {
++      const makeFragment = (sn: number, start: number) => {
++        const frag = new Fragment(
++          PlaylistLevelType.AUDIO,
++          '',
++        ) as any as MediaFragment;
++        frag.sn = sn;
++        frag.duration = SEGMENT_DURATION;
++        frag.setStart(start);
++        return frag;
++      };
++      const parentA = makeFragment(1, 0);
++      const parentB = makeFragment(2, SEGMENT_DURATION);
++
++      // Plain objects make the derived `loaded` state assignable in this test.
++      const makePart = (
++        fragment: MediaFragment,
++        index: number,
++        start: number,
++        duration: number,
++        loaded: boolean,
++      ) =>
++        ({
++          fragment,
++          index,
++          start,
++          duration,
++          loaded,
++          gap: false,
++          independent: true,
++        }) as unknown as Part;
++
++      const partList = [
++        makePart(parentA, 0, 0, REGULAR_PART, true),
++        makePart(parentA, 1, REGULAR_PART, REGULAR_PART, true),
++        makePart(parentA, 2, REGULAR_PART * 2, REGULAR_PART, true),
++        makePart(parentA, 3, REGULAR_PART * 3, REGULAR_PART, true),
++        // One AAC frame remains unloaded.
++        makePart(parentA, 4, REGULAR_PART * 4, AAC_FRAME, false),
++        makePart(parentB, 0, SEGMENT_DURATION, REGULAR_PART, false),
++        makePart(
++          parentB,
++          1,
++          SEGMENT_DURATION + REGULAR_PART,
++          REGULAR_PART,
++          false,
++        ),
++      ];
++      return { partList, parentA, parentB };
++    }
++
++    it('selects a short final part over the next fragment starting at the same time', function () {
++      const { partList, parentB } = partGrid();
++      // Selection has advanced and clamped the target to parent B's start.
++      const targetBufferTime = parentB.start;
++      expect(partList[5].start).to.equal(
++        targetBufferTime,
++        'the next fragment part 0 must begin exactly at the target buffer time',
++      );
++
++      const index = (baseStreamController as any).getNextPart(
++        partList,
++        parentB,
++        targetBufferTime,
++      );
++
++      expect(
++        index,
++        'the unloaded 21.333ms tail of the previous segment must be selected, ' +
++          'otherwise it is skipped and its audio is lost silently',
++      ).to.equal(4);
++    });
++
++    it('advances to the next fragment once the short final part is loaded', function () {
++      const { partList, parentB } = partGrid();
++      (partList[4] as any).loaded = true;
++
++      const index = (baseStreamController as any).getNextPart(
++        partList,
++        parentB,
++        parentB.start,
++      );
++
++      expect(
++        index,
++        'once the tail is loaded selection must move on rather than stall',
++      ).to.equal(5);
++    });
++  });
+ });
+-- 
+2.50.1 (Apple Git-155)
+

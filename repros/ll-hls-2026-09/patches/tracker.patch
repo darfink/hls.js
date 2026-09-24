@@ -1,0 +1,202 @@
+From 23cc7a8dff9d7f502638da608cc0c4793153f387 Mon Sep 17 00:00:00 2001
+From: Elliott Linder <elliott@linder.dev>
+Date: Thu, 24 Sep 2026 09:45:07 +0200
+Subject: [PATCH] fix: keep fragments partial until advertised tails are
+ buffered
+
+---
+ api-extractor/report/hls.js.api.md        |  2 +
+ src/controller/fragment-tracker.ts        | 19 ++++-
+ src/types/fragment-tracker.ts             |  2 +
+ tests/unit/controller/fragment-tracker.ts | 87 +++++++++++++++++++++++
+ 4 files changed, 108 insertions(+), 2 deletions(-)
+
+diff --git a/api-extractor/report/hls.js.api.md b/api-extractor/report/hls.js.api.md
+index fe72fbeb7..10fe23255 100644
+--- a/api-extractor/report/hls.js.api.md
++++ b/api-extractor/report/hls.js.api.md
+@@ -2042,6 +2042,8 @@ export interface FragmentEntity {
+     // (undocumented)
+     buffered: boolean;
+     // (undocumented)
++    bufferedPartEnd?: number;
++    // (undocumented)
+     loaded: FragLoadedData | null;
+     // Warning: (ae-forgotten-export) The symbol "FragmentBufferedRange" needs to be exported by the entry point hls.d.ts
+     //
+diff --git a/src/controller/fragment-tracker.ts b/src/controller/fragment-tracker.ts
+index 94cc34c81..4f35d6a50 100644
+--- a/src/controller/fragment-tracker.ts
++++ b/src/controller/fragment-tracker.ts
+@@ -240,6 +240,9 @@ export class FragmentTracker implements ComponentAPI {
+     if (!fragmentEntity || (fragmentEntity.buffered && frag.gap)) {
+       return;
+     }
++    fragmentEntity.bufferedPartEnd = part
++      ? Math.max(fragmentEntity.bufferedPartEnd ?? -Infinity, part.end)
++      : undefined;
+     const isFragHint = !frag.relurl;
+     Object.keys(timeRanges).forEach((elementaryStream: SourceBufferName) => {
+       const streamInfo = frag.elementaryStreams[elementaryStream];
+@@ -349,6 +352,10 @@ export class FragmentTracker implements ComponentAPI {
+     partial: boolean,
+     timeRange: TimeRanges,
+   ): FragmentBufferedRange {
++    // Buffer padding can cover an entire LL-HLS part. Until the final part
++    // arrives, do not treat that padding as proof the parent is complete.
++    // A late callback for an earlier part must preserve already complete media.
++    const pendingTail = part !== null && part.end < fragment.end;
+     const buffered: FragmentBufferedRange = {
+       time: [],
+       partial,
+@@ -360,7 +367,11 @@ export class FragmentTracker implements ComponentAPI {
+     for (let i = 0; i < timeRange.length; i++) {
+       const startTime = timeRange.start(i) - this.bufferPadding;
+       const endTime = timeRange.end(i) + this.bufferPadding;
+-      if (maxStartPTS >= startTime && minEndPTS <= endTime) {
++      if (
++        maxStartPTS >= startTime &&
++        minEndPTS <= endTime &&
++        (!pendingTail || endPTS <= timeRange.end(i))
++      ) {
+         // Fragment is entirely contained in buffer
+         // No need to check the other timeRange times since it's completely playable
+         buffered.time.push({
+@@ -434,7 +445,11 @@ export class FragmentTracker implements ComponentAPI {
+     if (fragmentEntity) {
+       if (!fragmentEntity.buffered) {
+         return FragmentState.APPENDING;
+-      } else if (isPartial(fragmentEntity)) {
++      } else if (
++        isPartial(fragmentEntity) ||
++        (fragmentEntity.bufferedPartEnd !== undefined &&
++          fragmentEntity.bufferedPartEnd < fragment.end)
++      ) {
+         return FragmentState.PARTIAL;
+       } else {
+         return FragmentState.OK;
+diff --git a/src/types/fragment-tracker.ts b/src/types/fragment-tracker.ts
+index 3487c429f..88fc87d1f 100644
+--- a/src/types/fragment-tracker.ts
++++ b/src/types/fragment-tracker.ts
+@@ -9,6 +9,8 @@ export interface FragmentEntity {
+   appendedPTS: number | null;
+   loaded: FragLoadedData | null;
+   buffered: boolean;
++  // Last endpoint delivered by parts, independent of later playlist growth.
++  bufferedPartEnd?: number;
+   range: { [key in SourceBufferName | 'subs']: FragmentBufferedRange };
+ }
+ 
+diff --git a/tests/unit/controller/fragment-tracker.ts b/tests/unit/controller/fragment-tracker.ts
+index 41cb02754..95ffceeb5 100644
+--- a/tests/unit/controller/fragment-tracker.ts
++++ b/tests/unit/controller/fragment-tracker.ts
+@@ -6,10 +6,12 @@ import {
+ } from '../../../src/controller/fragment-tracker';
+ import { Events } from '../../../src/events';
+ import Hls from '../../../src/hls';
++import { Part } from '../../../src/loader/fragment';
+ import { ElementaryStreamTypes, Fragment } from '../../../src/loader/fragment';
+ import { LoadStats } from '../../../src/loader/load-stats';
+ import { PlaylistLevelType } from '../../../src/types/loader';
+ import { ChunkMetadata } from '../../../src/types/transmuxer';
++import { AttrList } from '../../../src/utils/attr-list';
+ import type {
+   BufferAppendedData,
+   FragBufferedData,
+@@ -19,6 +21,91 @@ import type {
+ use(sinonChai);
+ 
+ describe('FragmentTracker', function () {
++  describe('final parent with pending parts', function () {
++    [PlaylistLevelType.MAIN, PlaylistLevelType.AUDIO].forEach((type) => {
++      it(`keeps ${type} partial until the last part is buffered`, function () {
++        const hls = new Hls({});
++        const tracker = new FragmentTracker(hls);
++        const stream =
++          type === PlaylistLevelType.MAIN
++            ? ElementaryStreamTypes.VIDEO
++            : ElementaryStreamTypes.AUDIO;
++        const frag = createMockFragment(
++          { startPTS: 22, endPTS: 24, sn: 12, level: 0, type },
++          [stream],
++        );
++        const first = new Part(
++          new AttrList('DURATION=1.8,URI="first.m4s"'),
++          frag as any,
++          '',
++          0,
++        );
++        const last = new Part(
++          new AttrList('DURATION=0.2,URI="last.m4s"'),
++          frag as any,
++          '',
++          1,
++          first,
++        );
++        // The playlist can grow a parent that was previously fully buffered.
++        frag.duration = 1.8;
++        triggerFragLoaded(hls, frag);
++        hls.trigger(
++          Events.BUFFER_APPENDED,
++          createBufferAppendedData([{ startPTS: 22, endPTS: 23.8 }]),
++        );
++        hls.trigger(Events.FRAG_BUFFERED, {
++          ...createFragBufferedData(frag),
++          part: first,
++        });
++        expect(tracker.getState(frag)).to.equal(FragmentState.OK);
++        frag.duration = 2;
++        expect(tracker.getState(frag)).to.equal(FragmentState.PARTIAL);
++        // The 200 ms tracker padding must not hide a whole missing final part.
++        triggerFragLoaded(hls, frag);
++        hls.trigger(
++          Events.BUFFER_APPENDED,
++          createBufferAppendedData([{ startPTS: 22, endPTS: 23.8 }]),
++        );
++        hls.trigger(Events.FRAG_BUFFERED, {
++          ...createFragBufferedData(frag),
++          part: first,
++        });
++        expect(tracker.getState(frag)).to.equal(FragmentState.PARTIAL);
++        // A later buffered segment does not fill the missing tail of this one.
++        hls.trigger(
++          Events.BUFFER_APPENDED,
++          createBufferAppendedData([
++            { startPTS: 22, endPTS: 23.8 },
++            { startPTS: 26, endPTS: 28 },
++          ]),
++        );
++        hls.trigger(Events.FRAG_BUFFERED, {
++          ...createFragBufferedData(frag),
++          part: first,
++        });
++        expect(tracker.getState(frag)).to.equal(FragmentState.PARTIAL);
++
++        hls.trigger(
++          Events.BUFFER_APPENDED,
++          createBufferAppendedData([{ startPTS: 22, endPTS: 24 }]),
++        );
++        hls.trigger(Events.FRAG_BUFFERED, {
++          ...createFragBufferedData(frag),
++          part: last,
++        });
++        expect(tracker.getState(frag)).to.equal(FragmentState.OK);
++        hls.trigger(Events.FRAG_BUFFERED, {
++          ...createFragBufferedData(frag),
++          part: first,
++        });
++        expect(tracker.getState(frag)).to.equal(FragmentState.OK);
++        tracker.destroy();
++        hls.destroy();
++      });
++    });
++  });
++
+   describe('getPartialFragment', function () {
+     const hls = new Hls({});
+     const fragmentTracker = new FragmentTracker(hls);
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,234 @@
+[
+  {
+    "case": "tail",
+    "build": "upstream",
+    "result": {
+      "actual": 5,
+      "details": {
+        "selected": "2.0.m4s",
+        "tail": "1.4.m4s",
+        "target": 1.984001
+      },
+      "expected": 4,
+      "passed": false
+    }
+  },
+  {
+    "case": "tail",
+    "build": "patched",
+    "result": {
+      "actual": 4,
+      "details": {
+        "selected": "1.4.m4s",
+        "tail": "1.4.m4s",
+        "target": 1.984001
+      },
+      "expected": 4,
+      "passed": true
+    }
+  },
+  {
+    "case": "subtitles",
+    "build": "upstream",
+    "result": {
+      "actual": false,
+      "details": {
+        "errors": [
+          {
+            "details": "internalException",
+            "message": "TypeError: Cannot read properties of null (reading 'start')"
+          },
+          {
+            "details": "internalException",
+            "message": "TypeError: Cannot read properties of null (reading 'initSegment')"
+          }
+        ],
+        "preserved": false,
+        "resumedFirstSequence": null
+      },
+      "expected": true,
+      "passed": false
+    }
+  },
+  {
+    "case": "subtitles",
+    "build": "patched",
+    "result": {
+      "actual": true,
+      "details": {
+        "errors": [],
+        "preserved": true,
+        "resumedFirstSequence": 100
+      },
+      "expected": true,
+      "passed": true
+    }
+  },
+  {
+    "case": "tracker",
+    "build": "upstream",
+    "result": {
+      "actual": "OK",
+      "details": {
+        "advertised": [
+          0,
+          2
+        ],
+        "before": "OK",
+        "buffer": [
+          0,
+          1.8
+        ]
+      },
+      "expected": "PARTIAL",
+      "passed": false
+    }
+  },
+  {
+    "case": "tracker",
+    "build": "patched",
+    "result": {
+      "actual": "PARTIAL",
+      "details": {
+        "advertised": [
+          0,
+          2
+        ],
+        "before": "OK",
+        "buffer": [
+          0,
+          1.8
+        ]
+      },
+      "expected": "PARTIAL",
+      "passed": true
+    }
+  },
+  {
+    "case": "loading",
+    "build": "upstream",
+    "result": {
+      "actual": null,
+      "details": {
+        "bufferEnd": 1.8,
+        "endlist": true,
+        "expected": 1,
+        "mediaEnd": 2,
+        "selected": null
+      },
+      "expected": 1,
+      "passed": false
+    }
+  },
+  {
+    "case": "loading",
+    "build": "patched",
+    "result": {
+      "actual": 1,
+      "details": {
+        "bufferEnd": 1.8,
+        "endlist": true,
+        "expected": 1,
+        "mediaEnd": 2,
+        "selected": 1
+      },
+      "expected": 1,
+      "passed": true
+    }
+  },
+  {
+    "case": "playback",
+    "build": "upstream",
+    "result": {
+      "actual": false,
+      "details": {
+        "buffered": [
+          [
+            14.037333,
+            15.8
+          ],
+          [
+            16,
+            17.8
+          ],
+          [
+            18,
+            18.8
+          ],
+          [
+            20,
+            21.8
+          ],
+          [
+            22,
+            22.2
+          ]
+        ],
+        "duration": 24,
+        "ended": false,
+        "errors": [],
+        "switches": [
+          {
+            "index": 1,
+            "kind": "audio",
+            "time": 7.872652
+          },
+          {
+            "index": 0,
+            "kind": "video",
+            "time": 10.019805
+          },
+          {
+            "index": 0,
+            "kind": "audio",
+            "time": 13.206911
+          },
+          {
+            "index": 1,
+            "kind": "video",
+            "time": 16.20204
+          }
+        ],
+        "time": 23.700082
+      },
+      "expected": true,
+      "passed": false
+    }
+  },
+  {
+    "case": "playback",
+    "build": "patched",
+    "result": {
+      "actual": true,
+      "details": {
+        "ended": true,
+        "errors": [],
+        "switches": [
+          {
+            "index": 1,
+            "kind": "audio",
+            "time": 7.984987
+          },
+          {
+            "index": 0,
+            "kind": "video",
+            "time": 10.111433
+          },
+          {
+            "index": 0,
+            "kind": "audio",
+            "time": 13.295845
+          },
+          {
+            "index": 1,
+            "kind": "video",
+            "time": 16.21935
+          }
+        ],
+        "time": 24.021333
+      },
+      "expected": true,
+      "passed": true
+    }
+  }
+]

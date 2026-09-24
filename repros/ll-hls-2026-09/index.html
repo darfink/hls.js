@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hls.js LL-HLS regression reproductions</title>
+<style>body{font:16px/1.55 system-ui;margin:32px auto;padding:0 20px;max-width:1040px;color:#202735}h1{line-height:1.2}button,select{font:inherit;padding:8px;margin:4px}pre{background:#edf0f4;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}video{width:640px;max-width:100%;background:#111}a{color:#175ab1}.note{border-left:4px solid #dca53c;padding-left:14px}#result{font-weight:bold}small{color:#536072}</style>
+<h1>LL-HLS regression reproductions</h1>
+<p>Fixed upstream baseline: <code>c721313f0</code> (master, 2026-09-23). Each state reproduction compares that exact baseline with one isolated patch. <a href="provenance.json">Build hashes and source commits</a> · <a href="README.md">Reproduction notes</a></p>
+<label>Scenario <select id="scenario"><option value="tail">Unloaded tail at an exact boundary</option><option value="subtitles">Late subtitle delta response</option><option value="tracker">Prematurely complete parent</option><option value="loading">Pending final parts after ENDLIST</option><option value="playback">Recorded live playback (combined patches)</option></select></label>
+<label>Player <select id="build"><option value="upstream">Upstream baseline</option><option value="patched">Patched</option></select></label>
+<button id="run">Run selected case</button>
+<p id="description"></p><p id="result" aria-live="polite">Choose a case and run it.</p>
+<video id="video" controls muted playsinline hidden></video>
+<pre id="log"></pre>
+<p class="note">The first four cases are deterministic controller/state regressions using real parsed playlists. They inject the prior loading/buffering state explicitly; they are not end-to-end playback tests. The playback case fetches real synthetic media and replays captured live playlist updates through a custom loader. A plain static playlist cannot reproduce live update timing.</p>
+<h2>Playlist excerpts and static media</h2>
+<ul><li><a href="excerpts/tail.m3u8">Tail boundary excerpt</a></li><li><a href="excerpts/subtitles-full.m3u8">Subtitle full playlist</a> → <a href="excerpts/subtitles-delta.m3u8">late delta</a></li><li><a href="excerpts/final-live.m3u8">Live final-parent excerpt</a> → <a href="excerpts/final-ended.m3u8">ENDLIST excerpt</a></li><li><a href="assets/media/index.m3u8">Playable static VOD URL</a> — playback sanity check, not a live-race reproduction.</li></ul>
+<p><small>Media is synthetic. No credentials, user media, analytics, or external player CDN. Apache-2.0 player source notices: <a href="LICENSE">LICENSE</a>.</small></p>
+<script type="module" src="demo.js"></script></html>
