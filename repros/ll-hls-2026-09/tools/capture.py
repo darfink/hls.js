@@ -33,6 +33,7 @@ try:
    for path in ['index.m3u8','0/video.m3u8','1/video.m3u8','2/audio.m3u8','3/audio.m3u8']:
     try: body=fetch(origin+path).decode()
     except Exception: continue
+    if path=='index.m3u8': body='\n'.join(line for line in body.splitlines() if not line.startswith('#EXT-X-I-FRAME-STREAM-INF:'))+'\n'
     entries=snapshots.setdefault(path,[])
     if not entries or entries[-1]['body']!=body: entries.append({'at':elapsed,'body':body})
     for line in body.splitlines():

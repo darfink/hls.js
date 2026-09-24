@@ -24,7 +24,7 @@ Use the separate captured assets for playable media.
 The playback case replays captured playlist snapshots through a custom hls.js loader.
 Media requests fetch real static fMP4 files. Audio and video switches use the normal player APIs.
 The loader reproduces a playlist evolving over time; it is not a general LL-HLS blocking-reload server.
-The fixture was generated without publisher loss. Allow 40 seconds per run.
+The fixture was generated without publisher loss. I-frame-only playlist entries are omitted because this capture covers normal audio/video playback. Allow 40 seconds per run.
 
 The static [master playlist](assets/media/index.m3u8) is an ordinary ended presentation.
 It can be opened in another player as a media sanity check, but does not reproduce live update races.
